@@ -323,4 +323,4 @@ async def send_override(context_or_channel, *args, **kwargs):
     return await send(channel, *args, **kwargs)
 
 
-abc.Messageable.send = send_override
+#abc.Messageable.send = send_override
