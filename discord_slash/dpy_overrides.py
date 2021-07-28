@@ -34,7 +34,7 @@ def new_override(cls, *args, **kwargs):
         return object.__new__(cls)
 
 
-discord.message.Message.__new__ = new_override
+#discord.message.Message.__new__ = new_override
 
 
 def send_files(
