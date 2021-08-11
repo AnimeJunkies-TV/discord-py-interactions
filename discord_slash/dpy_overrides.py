@@ -34,7 +34,7 @@ def new_override(cls, *args, **kwargs):
         return object.__new__(cls)
 
 
-discord.message.Message.__new__ = new_override
+#discord.message.Message.__new__ = new_override
 
 
 def send_files(
@@ -131,8 +131,8 @@ def send_message(
     return self.request(r, json=payload)
 
 
-http.HTTPClient.send_files = send_files
-http.HTTPClient.send_message = send_message
+#http.HTTPClient.send_files = send_files
+#http.HTTPClient.send_message = send_message
 
 
 async def send(
@@ -323,4 +323,4 @@ async def send_override(context_or_channel, *args, **kwargs):
     return await send(channel, *args, **kwargs)
 
 
-abc.Messageable.send = send_override
+#abc.Messageable.send = send_override
