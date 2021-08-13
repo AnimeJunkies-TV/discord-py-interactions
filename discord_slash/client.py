@@ -89,7 +89,7 @@ class SlashCommand:
                 response` event."
             )
 
-            self._discord.on_socket_event_type = self.on_socket_event_type
+            self._discord.on_interaction = self.on_interaction
             self.has_listener = False
         else:
             if not hasattr(self._discord, "slash"):
@@ -97,7 +97,7 @@ class SlashCommand:
             else:
                 raise error.DuplicateSlashClient("You can't have duplicate SlashCommand instances!")
 
-            self._discord.add_listener(self.on_socket_event_type)
+            self._discord.add_listener(self.on_interaction)
             self.has_listener = True
             default_add_function = self._discord.add_cog
 
@@ -1383,7 +1383,7 @@ class SlashCommand:
                     self.logger.error(f"{ctx.command}:: Error using error decorator: {e}")
         return False
 
-    async def on_socket_event_type(self, msg):
+    async def on_interaction(self, msg):
         """
         This event listener is automatically registered at initialization of this class.
 
