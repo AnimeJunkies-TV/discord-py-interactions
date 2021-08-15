@@ -1,5 +1,6 @@
 import datetime
 import typing
+from typing import TYPE_CHECKING
 from warnings import warn
 
 import discord
@@ -8,6 +9,9 @@ from discord.utils import snowflake_time
 
 from . import error, http, model
 from .dpy_overrides import ComponentMessage
+
+if TYPE_CHECKING:  # circular import sucks for typehinting
+    from . import client
 
 
 class InteractionContext:
@@ -43,14 +47,15 @@ class InteractionContext:
         logger,
     ):
         self._token = _json["token"]
-        self.message = None  # Should be set later.
+        self.message = None
+        self.menu_messages = None
+        self.data = _json["data"]
         self.interaction_id = _json["id"]
         self._http = _http
         self.bot = _discord
         self._logger = logger
         self.deferred = False
         self.responded = False
-        self.data = _json["data"]
         self.values = _json["data"]["values"] if "values" in _json["data"] else None
         self._deferred_hidden = False  # To check if the patch to the deferred response matches
         self.guild_id = int(_json["guild_id"]) if "guild_id" in _json.keys() else None
@@ -113,6 +118,25 @@ class InteractionContext:
         :return: Optional[Union[discord.abc.GuildChannel, discord.abc.PrivateChannel]]
         """
         return self.bot.get_channel(self.channel_id)
+
+    @property
+    def voice_client(self) -> typing.Optional[discord.VoiceProtocol]:
+        """
+        VoiceClient instance of the command invoke. If the command was invoked in DM, then it is ``None``.
+        If the bot is not connected to any Voice/Stage channels, then it is ``None``.
+
+        :return: Optional[discord.VoiceProtocol]
+        """
+        return self.guild.voice_client if self.guild else None
+
+    @property
+    def me(self) -> typing.Union[discord.Member, discord.ClientUser]:
+        """
+        Bot member instance of the command invoke. If the command was invoked in DM, then it is ``discord.ClientUser``.
+
+        :return: Union[discord.Member, discord.ClientUser]
+        """
+        return self.guild.me if self.guild is not None else self.bot.user
 
     async def defer(self, hidden: bool = False):
         """
@@ -256,6 +280,64 @@ class InteractionContext:
         else:
             return resp
 
+    async def reply(
+        self,
+        content: str = "",
+        *,
+        embed: discord.Embed = None,
+        embeds: typing.List[discord.Embed] = None,
+        tts: bool = False,
+        file: discord.File = None,
+        files: typing.List[discord.File] = None,
+        allowed_mentions: discord.AllowedMentions = None,
+        hidden: bool = False,
+        delete_after: float = None,
+        components: typing.List[dict] = None,
+    ) -> model.SlashMessage:
+        """
+        Sends response of the interaction. This is currently an alias of the ``.send()`` method.
+
+        .. warning::
+            - Since Release 1.0.9, this is completely changed. If you are migrating from older version, please make sure to fix the usage.
+            - You can't use both ``embed`` and ``embeds`` at the same time, also applies to ``file`` and ``files``.
+            - If you send files in the initial response, this will defer if it's not been deferred, and then PATCH with the message
+
+        :param content:  Content of the response.
+        :type content: str
+        :param embed: Embed of the response.
+        :type embed: discord.Embed
+        :param embeds: Embeds of the response. Maximum 10.
+        :type embeds: List[discord.Embed]
+        :param tts: Whether to speak message using tts. Default ``False``.
+        :type tts: bool
+        :param file: File to send.
+        :type file: discord.File
+        :param files: Files to send.
+        :type files: List[discord.File]
+        :param allowed_mentions: AllowedMentions of the message.
+        :type allowed_mentions: discord.AllowedMentions
+        :param hidden: Whether the message is hidden, which means message content will only be seen to the author.
+        :type hidden: bool
+        :param delete_after: If provided, the number of seconds to wait in the background before deleting the message we just sent. If the deletion fails, then it is silently ignored.
+        :type delete_after: float
+        :param components: Message components in the response. The top level must be made of ActionRows.
+        :type components: List[dict]
+        :return: Union[discord.Message, dict]
+        """
+
+        return await self.send(
+            content=content,
+            embed=embed,
+            embeds=embeds,
+            tts=tts,
+            file=file,
+            files=files,
+            allowed_mentions=allowed_mentions,
+            hidden=hidden,
+            delete_after=delete_after,
+            components=components,
+        )
+
 
 class SlashContext(InteractionContext):
     """
@@ -284,6 +366,63 @@ class SlashContext(InteractionContext):
         self.command_id = _json["data"]["id"]
 
         super().__init__(_http=_http, _json=_json, _discord=_discord, logger=logger)
+
+    @property
+    def slash(self) -> "client.SlashCommand":
+        """
+        Returns the associated SlashCommand object created during Runtime.
+
+        :return: client.SlashCommand
+        """
+        return self.bot.slash  # noqa
+
+    @property
+    def cog(self) -> typing.Optional[commands.Cog]:
+        """
+        Returns the cog associated with the command invoked, if any.
+
+        :return: Optional[commands.Cog]
+        """
+
+        cmd_obj = self.slash.commands[self.command]
+
+        if isinstance(cmd_obj, (model.CogBaseCommandObject, model.CogSubcommandObject)):
+            return cmd_obj.cog
+        else:
+            return None
+
+    async def invoke(self, *args, **kwargs):
+        """
+        Invokes a command with the arguments given.\n
+        Similar to d.py's `ctx.invoke` function and documentation.\n
+
+        .. note::
+
+            This does not handle converters, checks, cooldowns, pre-invoke,
+            or after-invoke hooks in any matter. It calls the internal callback
+            directly as-if it was a regular function.
+
+            You must take care in passing the proper arguments when
+            using this function.
+
+        .. warning::
+            The first parameter passed **must** be the command being invoked.
+            While using `ctx.defer`, if the command invoked includes usage of that command, do not invoke
+            `ctx.defer` before calling this function. It can not defer twice.
+
+        :param args: Args for the command.
+        :param kwargs: Keyword args for the command.
+
+        :raises: :exc:`TypeError`
+        """
+
+        try:
+            command = args[0]
+        except IndexError:
+            raise TypeError("Missing command to invoke.") from None
+
+        ret = await self.slash.invoke_command(func=command, ctx=self, args=kwargs)
+        return ret
 
 
 class ComponentContext(InteractionContext):
@@ -326,30 +465,40 @@ class ComponentContext(InteractionContext):
         if self.component_type == 3:
             self.selected_options = _json["data"].get("values", [])
 
-    async def defer(self, hidden: bool = False, edit_origin: bool = False):
+    async def defer(self, hidden: bool = False, edit_origin: bool = False, ignore: bool = False):
         """
         'Defers' the response, showing a loading state to the user
 
-        :param hidden: Whether the deferred response should be ephemeral . Default ``False``.
+        :param hidden: Whether the deferred response should be ephemeral. Default ``False``.
         :param edit_origin: Whether the type is editing the origin message. If ``False``, the deferred response will be for a follow up message. Defaults ``False``.
+        :param ignore: Whether to just ignore and not edit or send response. Using this can avoid showing interaction loading state. Default ``False``.
         """
         if self.deferred or self.responded:
             raise error.AlreadyResponded("You have already responded to this command!")
 
-        base = {"type": 6 if edit_origin else 5}
+        base = {"type": 6 if edit_origin or ignore else 5}
+
+        if edit_origin and ignore:
+            raise error.IncorrectFormat("'edit_origin' and 'ignore' are mutually exclusive")
 
         if hidden:
             if edit_origin:
                 raise error.IncorrectFormat(
                     "'hidden' and 'edit_origin' flags are mutually exclusive"
                 )
-            base["data"] = {"flags": 64}
-            self._deferred_hidden = True
+            elif ignore:
+                self._deferred_hidden = True
+            else:
+                base["data"] = {"flags": 64}
+                self._deferred_hidden = True
 
         self._deferred_edit_origin = edit_origin
 
         await self._http.post_initial_response(base, self.interaction_id, self._token)
-        self.deferred = True
+        self.deferred = not ignore
+
+        if ignore:
+            self.responded = True
 
     async def send(
         self,
@@ -483,3 +632,141 @@ class ComponentContext(InteractionContext):
         # Commented out for now as sometimes (or at least, when not deferred) _json is an empty string?
         # self.origin_message = ComponentMessage(state=self.bot._connection, channel=self.channel,
         #                                        data=_json)
+
+
+class MenuContext(InteractionContext):
+    """
+    Context of a context menu interaction. Has all attributes from :class:`InteractionContext`, plus the context-specific ones below.
+
+    :ivar context_type: The type of context menu command.
+    :ivar _resolved: The data set for the context menu.
+    :ivar target_message: The targeted message of the context menu command if present. Defaults to ``None``.
+    :ivar target_id: The target ID of the context menu command.
+    :ivar target_author: The author targeted from the context menu command.
+    """
+
+    def __init__(
+        self,
+        _http: http.SlashCommandRequest,
+        _json: dict,
+        _discord: typing.Union[discord.Client, commands.Bot],
+        logger,
+    ):
+        super().__init__(_http=_http, _json=_json, _discord=_discord, logger=logger)
+        self.context_type = _json["type"]
+        self._resolved = self.data["resolved"] if "resolved" in self.data.keys() else None
+        self.target_message = None
+        self.target_author = None
+        self.target_id = self.data["target_id"]
+
+        if self._resolved is not None:
+            try:
+                if self._resolved["messages"]:
+                    _msg = [msg for msg in self._resolved["messages"]][0]
+                    self.target_message = model.SlashMessage(
+                        state=self.bot._connection,
+                        channel=_discord.get_channel(self.channel_id),
+                        data=self._resolved["messages"][_msg],
+                        _http=_http,
+                        interaction_token=self._token,
+                    )
+            except KeyError:  # noqa
+                pass
+
+            try:
+                if self.guild and self._resolved["members"]:
+                    _auth = [auth for auth in self._resolved["members"]][0]
+                    self.target_author = discord.Member(
+                        data=self._resolved["members"][_auth],
+                        state=self.bot._connection,
+                        guild=self.guild,
+                    )
+                else:
+                    _auth = [auth for auth in self._resolved["users"]][0]
+                    self.target_author = discord.User(
+                        data=self._resolved["users"][_auth], state=self.bot._connection
+                    )
+            except KeyError:  # noqa
+                pass
+
+    @property
+    def cog(self) -> typing.Optional[commands.Cog]:
+        """
+        Returns the cog associated with the command invoked, if any.
+
+        :return: Optional[commands.Cog]
+        """
+
+        cmd_obj = self.slash.commands[self.command]
+
+        if isinstance(cmd_obj, (model.CogBaseCommandObject, model.CogSubcommandObject)):
+            return cmd_obj.cog
+        else:
+            return None
+
+    async def defer(self, hidden: bool = False, edit_origin: bool = False, ignore: bool = False):
+        """
+        'Defers' the response, showing a loading state to the user
+
+        :param hidden: Whether the deferred response should be ephemeral. Default ``False``.
+        :param edit_origin: Whether the type is editing the origin message. If ``False``, the deferred response will be for a follow up message. Defaults ``False``.
+        :param ignore: Whether to just ignore and not edit or send response. Using this can avoid showing interaction loading state. Default ``False``.
+        """
+        if self.deferred or self.responded:
+            raise error.AlreadyResponded("You have already responded to this command!")
+
+        base = {"type": 6 if edit_origin or ignore else 5}
+
+        if edit_origin and ignore:
+            raise error.IncorrectFormat("'edit_origin' and 'ignore' are mutually exclusive")
+
+        if hidden:
+            if edit_origin:
+                raise error.IncorrectFormat(
+                    "'hidden' and 'edit_origin' flags are mutually exclusive"
+                )
+            elif ignore:
+                self._deferred_hidden = True
+            else:
+                base["data"] = {"flags": 64}
+                self._deferred_hidden = True
+
+        self._deferred_edit_origin = edit_origin
+
+        await self._http.post_initial_response(base, self.interaction_id, self._token)
+        self.deferred = not ignore
+
+        if ignore:
+            self.responded = True
+
+    async def send(
+        self,
+        content: str = "",
+        *,
+        embed: discord.Embed = None,
+        embeds: typing.List[discord.Embed] = None,
+        tts: bool = False,
+        file: discord.File = None,
+        files: typing.List[discord.File] = None,
+        allowed_mentions: discord.AllowedMentions = None,
+        hidden: bool = False,
+        delete_after: float = None,
+        components: typing.List[dict] = None,
+    ) -> model.SlashMessage:
+        if self.deferred and self._deferred_edit_origin:
+            self._logger.warning(
+                "Deferred response might not be what you set it to! (edit origin / send response message) "
+                "This is because it was deferred with different response type."
+            )
+        return await super().send(
+            content,
+            embed=embed,
+            embeds=embeds,
+            tts=tts,
+            file=file,
+            files=files,
+            allowed_mentions=allowed_mentions,
+            hidden=hidden,
+            delete_after=delete_after,
+            components=components,
+        )
