@@ -303,7 +303,7 @@ class SlashCommand:
                             }
                             if y in selected.permissions:
                                 command_dict["permissions"][y] = selected.permissions[y]
-                            wait[y][x] = copy.deepcopy(command_dict)
+                            wait[y][_x] = copy.deepcopy(command_dict)
                     else:
                         if "global" not in wait:
                             wait["global"] = {}
@@ -314,7 +314,7 @@ class SlashCommand:
                             "permissions": selected.permissions or {},
                             "type": selected._type,
                         }
-                        wait["global"][x] = copy.deepcopy(command_dict)
+                        wait["global"][_x] = copy.deepcopy(command_dict)
 
                 continue
 
@@ -1394,15 +1394,24 @@ class SlashCommand:
 
         to_use = msg["d"]
         interaction_type = to_use["type"]
-        if interaction_type in (1, 2, 3) or msg["s"] == 5:
+
+        # dis_snek variance seq
+
+        if interaction_type in (1, 2):
             await self._on_slash(to_use)
             await self._on_context_menu(to_use)
+        elif interaction_type == 3:
             try:
                 await self._on_component(to_use)  # noqa
             except KeyError:
                 pass  # for some reason it complains about custom_id being an optional arg when it's fine?
+            finally:
+                await self._on_context_menu(to_use)
+        else:
+            raise NotImplementedError(
+                f"Unknown Interaction Received: {interaction_type}"
+            )  # check if discord does a sneaky event change on us
         return
-        # raise NotImplementedError
 
     async def _on_component(self, to_use):
         ctx = context.ComponentContext(self.req, to_use, self._discord, self.logger)
@@ -1415,7 +1424,7 @@ class SlashCommand:
             self._discord.dispatch("component_callback", ctx, callback)
             await self.invoke_component_callback(callback, ctx)
 
-    async def _on_slash(self, to_use):
+    async def _on_slash(self, to_use):  # slash commands only.
         if to_use["data"]["name"] in self.commands:
 
             ctx = context.SlashContext(self.req, to_use, self._discord, self.logger)
@@ -1425,6 +1434,12 @@ class SlashCommand:
                 return await self.handle_subcommand(ctx, to_use)
 
             selected_cmd = self.commands[to_use["data"]["name"]]
+
+            if type(selected_cmd) == dict:
+                return  # this is context dict storage.
+
+            if selected_cmd._type != 1:
+                return  # If its a menu, ignore.
 
             if (
                 selected_cmd.allowed_guild_ids
@@ -1462,6 +1477,12 @@ class SlashCommand:
             await self.invoke_command(selected_cmd, ctx, args)
 
     async def _on_context_menu(self, to_use):
+        # Slash Command Logic
+
+        # to prevent any potential keyerrors:
+        if "name" not in to_use["data"].keys():
+            return
+
         if to_use["data"]["name"] in self.commands["context"]:
             ctx = context.MenuContext(self.req, to_use, self._discord, self.logger)
             cmd_name = to_use["data"]["name"]
@@ -1470,6 +1491,39 @@ class SlashCommand:
                 return  # menus don't have subcommands you smooth brain
 
             selected_cmd = self.commands["context"][cmd_name]
+
+            if (
+                selected_cmd.allowed_guild_ids
+                and ctx.guild_id not in selected_cmd.allowed_guild_ids
+            ):
+                return
+
+            if selected_cmd.has_subcommands and not selected_cmd.func:
+                return await self.handle_subcommand(ctx, to_use)
+
+            if "options" in to_use["data"]:
+                for x in to_use["data"]["options"]:
+                    if "value" not in x:
+                        return await self.handle_subcommand(ctx, to_use)
+
+            self._discord.dispatch("context_menu", ctx)
+
+            await self.invoke_command(selected_cmd, ctx, args={})
+
+        # Cog Logic
+
+        elif to_use["data"]["name"] in self.commands:
+            ctx = context.MenuContext(self.req, to_use, self._discord, self.logger)
+            cmd_name = to_use["data"]["name"]
+
+            if cmd_name not in self.commands and cmd_name in self.subcommands:
+                return  # menus don't have subcommands you smooth brain
+
+            selected_cmd = self.commands[cmd_name]
+            if type(selected_cmd) == dict:
+                return  # Get rid of any selection thats a dict somehow
+            if selected_cmd._type == 1:  # noqa
+                return  # Slash command obj.
 
             if (
                 selected_cmd.allowed_guild_ids
